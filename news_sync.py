@@ -1,8 +1,9 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from websocket import create_connection
 import requests
 import os
+from tqdm import tqdm
 
 # Relay URL and Publishers
 RELAY_URL = "wss://relay.mostr.pub"
@@ -28,24 +29,33 @@ PUBLISHERS = [
     "82acde23330b88e6831146a373eee2716c57df3e0054c5187169e92ee0880120"
 ]
 
-LAST_RUN_FILE = "last_ran_timestamp.txt"
+LAST_RUN_FILE = "news_sync_timestamp.txt"
 
 def get_last_run_timestamp():
     if os.path.exists(LAST_RUN_FILE):
         with open(LAST_RUN_FILE, "r") as file:
-            return int(file.read().strip())
+            content = file.read().strip()
+            if content.isdigit():
+                return int(content)
+            else:
+                print("Warning: last_ran_timestamp.txt is empty or contains invalid data.")
     return None
 
 def save_current_timestamp():
-    with open(LAST_RUN_FILE, "w") as file:
-        file.write(str(int(datetime.utcnow().timestamp())))
+    try:
+        with open(LAST_RUN_FILE, "w") as file:
+            file.write(str(int(datetime.now(timezone.utc).timestamp())))
+        print("Timestamp saved successfully.")
+    except Exception as e:
+        print(f"Error saving timestamp: {e}")
+
 
 # Fetch recent events from the relay
 def fetch_events(pubkeys, since=None):
     events = []
     try:
         ws = create_connection(RELAY_URL)
-        for pubkey in pubkeys:
+        for pubkey in tqdm(pubkeys, desc="Fetching events", unit="pubkey"):
             # Nostr protocol request to fetch events for the pubkey
             request = {
                 "authors": [pubkey]
@@ -69,7 +79,7 @@ def fetch_events(pubkeys, since=None):
 def publish_to_news(events):
     try:
         ws = create_connection(NEWS_URL)
-        for event in events:
+        for event in tqdm(events, desc="Publishing events", unit="event", total=len(events)):
             # Nostr protocol request to publish an event
             request = json.dumps(["EVENT", {
                 "pubkey": event["pubkey"],
@@ -81,24 +91,22 @@ def publish_to_news(events):
             response = ws.recv()
             response_data = json.loads(response)
             if response_data[0] == "OK":
-                print(f"Published event ID {event['id']} to news.nos.social successfully.")
+                pass  # Uncomment the above line to enable success logging
             else:
                 print(f"Failed to publish event ID {event['id']} to news.nos.social. Response: {response_data}")
         ws.close()
     except Exception as e:
         print(f"Error publishing to news.nos.social: {e}")
 
+
 # Main function
 def main():
     last_run_timestamp = get_last_run_timestamp()
-    print("Fetching recent events from Nostr relay...")
     recent_events = fetch_events(PUBLISHERS, since=last_run_timestamp)
-    if recent_events:
-        print(f"Fetched {len(recent_events)} events. Publishing to news.nos.social...")
-        publish_to_news(recent_events)
-    else:
-        print("No events found.")
     save_current_timestamp()
+    if recent_events:
+        publish_to_news(recent_events)
+
 
 if __name__ == "__main__":
     main()
