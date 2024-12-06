@@ -14,6 +14,8 @@ import time
 from datetime import datetime, timedelta
 import traceback
 import math
+import argparse
+import sys
 
 # Configuration
 RELAY_URL = "wss://relay.mostr.pub"
@@ -53,8 +55,12 @@ def update_last_successful_timestamp(timestamp):
     with open(TIMESTAMP_FILE, "w") as f:
         f.write(str(int(timestamp.timestamp())))
 
+# Function to check if the script is running in a TTY
+def is_tty():
+    return sys.stdout.isatty()
+
 # Fetch kind: 0 metadata events from the relay
-def fetch_metadata(blocklist):
+def fetch_metadata(blocklist, cron_mode=False):
     pubkeys = set()
     processed_event_ids = set()
     
@@ -75,7 +81,8 @@ def fetch_metadata(blocklist):
             readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
             readable_end = (start_date + time_gap).strftime('%Y-%m-%d %H:%M:%S')
             
-            print(f"Loop {loop_counter}: Requesting events from {readable_start}")
+            if not cron_mode and is_tty():
+                print(f"Loop {loop_counter}: Requesting events from {readable_start}")
             
             # Subscribe to all kind: 0 events with a time filter
             request = json.dumps([
@@ -95,7 +102,8 @@ def fetch_metadata(blocklist):
                 data = json.loads(response)
                 
                 if data[0] == "EOSE":  # End of subscription events
-                    print(f"Found: {event_count} profiles of {len(pubkeys)}")
+                    if not cron_mode and is_tty():
+                        print(f"Found: {event_count} profiles of {len(pubkeys)}")
                     break
                 
                 if data[0] == "EVENT" and "content" in data[2]:
@@ -139,26 +147,30 @@ def fetch_metadata(blocklist):
                 start_date = datetime.fromtimestamp(start_timestamp)  # Ensure start_date is reset correctly
                 time_gap = timedelta(seconds=(end_timestamp - start_timestamp))  # Calculate the time gap
                 growth_factor = 0  # Reset growth factor
-                print(f"Retracing time gap to {time_gap}. Using first event timestamp for next range.")
+                if not cron_mode and is_tty():
+                    print(f"Retracing time gap to {time_gap}. Using first event timestamp for next range.")
             elif event_count > 150:
                 # Reset the time gap to 20 minutes
                 start_date = datetime.fromtimestamp(end_timestamp)  # Move to the end of the current range
                 time_gap = timedelta(minutes=20)  # Set to 20 minutes
                 end_timestamp = start_date + time_gap
-                print(f"Resetting time gap to {time_gap}.")
+                if not cron_mode and is_tty():
+                    print(f"Resetting time gap to {time_gap}.")
             elif event_count > 50:
                 # Shrink the time gap
                 start_date = datetime.fromtimestamp(end_timestamp)  # Move to the end of the current range
                 time_gap = timedelta(minutes=60)   # Slower growth using square root
                 growth_factor += 1  # Increase the growth factor for the next cycle
                 end_timestamp = start_date + time_gap
-                print(f"Resetting time gap to {time_gap}.")
+                if not cron_mode and is_tty():
+                    print(f"Resetting time gap to {time_gap}.")
             else:
                 # Grow the time gap when there are fewer than 50 events
                 start_date = datetime.fromtimestamp(end_timestamp)  # Move to the end of the current range
                 time_gap = max(timedelta(minutes=10), time_gap * 2)  # Multiply the current gap by 2
                 end_timestamp = start_date + time_gap
-                print(f"Increasing time gap to {time_gap}.")
+                if not cron_mode and is_tty():
+                    print(f"Increasing time gap to {time_gap}.")
             
             # Save pubkeys to file after each request cycle
             save_pubkeys_to_file(pubkeys)
@@ -172,10 +184,10 @@ def fetch_metadata(blocklist):
         
         ws.close()
     except Exception as e:
-        print(f"Error fetching metadata: {e}")
-        traceback.print_exc()  # Print the stack trace for more detailed error information
-        # Optionally, log the state of relevant variables
-        print(f"Current state: start_date={start_date}, current_time={current_time}, loop_counter={loop_counter}")
+        if not cron_mode and is_tty():
+            print(f"Error fetching metadata: {e}")
+            traceback.print_exc()
+            print(f"Current state: start_date={start_date}, current_time={current_time}, loop_counter={loop_counter}")
     
     return pubkeys
 
@@ -201,15 +213,33 @@ def save_pubkeys_to_file(pubkeys):
         for pubkey in all_pubkeys:
             f.write(pubkey + "\n")
     
-    print(f"Public keys saved to {OUTPUT_FILE}")
-    print(f"New public keys added: {new_pubkeys_count}")
-    print(f"Pre-existing public keys: {pre_existing_pubkeys_count}")
+    if not is_tty():
+        print(f"Public keys saved to {OUTPUT_FILE}")
+        print(f"New public keys added: {new_pubkeys_count}")
+        print(f"Pre-existing public keys: {pre_existing_pubkeys_count}")
 
 # Main function
 def main():
-    blocklist = load_blocklist("_unified_tier0_blocklist.csv")
-    pubkeys = fetch_metadata(blocklist)
-    save_pubkeys_to_file(pubkeys)
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Fetch Nostr metadata.")
+    parser.add_argument('--cron', action='store_true', help="Run in cron mode (suppress progress output)")
+    args = parser.parse_args()
+
+    # Define the allowed start and end times
+    allowed_start_time = time(9, 0)  # 9:00 AM
+    allowed_end_time = time(17, 0)   # 5:00 PM
+
+    # Get the current time
+    current_time = datetime.now().time()
+
+    # Check if the current time is within the allowed time range
+    if allowed_start_time <= current_time <= allowed_end_time:
+        blocklist = load_blocklist("_unified_tier0_blocklist.csv")
+        pubkeys = fetch_metadata(blocklist, args.cron)
+        save_pubkeys_to_file(pubkeys)
+    else:
+        if not args.cron and is_tty():
+            print("The script can only run between 9:00 AM and 5:00 PM.")
 
 if __name__ == "__main__":
     main()

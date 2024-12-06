@@ -1,13 +1,13 @@
 import json
 from datetime import datetime, timezone
 from websocket import create_connection
-import requests
 import os
-from tqdm import tqdm
+import sys
+import argparse
 
 # Relay URL and Publishers
 RELAY_URL = "wss://relay.mostr.pub"
-NEWS_URL = "wss://news.nos.social"  # Corrected to the Nostr relay URL
+NEWS_URL = "wss://news.nos.social"
 PUBLISHERS = [
     "b43cdcbe1b5a991e91636c1372abd046ff1d6b55a17722a2edf2d888aeaa3150",
     "9561cd80e1207f685277c5c9716dde53499dd88c525947b1dde51374a81df0b9",
@@ -31,6 +31,14 @@ PUBLISHERS = [
 
 LAST_RUN_FILE = "news_sync_timestamp.txt"
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="News synchronization script.")
+    parser.add_argument("--cron", action="store_true", help="Run script in cron mode, suppressing progress output.")
+    return parser.parse_args()
+
+def is_running_in_cron(cron_arg):
+    return cron_arg or not sys.stdout.isatty()
+
 def get_last_run_timestamp():
     if os.path.exists(LAST_RUN_FILE):
         with open(LAST_RUN_FILE, "r") as file:
@@ -49,38 +57,35 @@ def save_current_timestamp():
     except Exception as e:
         print(f"Error saving timestamp: {e}")
 
-
-# Fetch recent events from the relay
-def fetch_events(pubkeys, since=None):
+def fetch_events(pubkeys, since=None, cron_mode=False):
     events = []
     try:
         ws = create_connection(RELAY_URL)
-        for pubkey in tqdm(pubkeys, desc="Fetching events", unit="pubkey"):
-            # Nostr protocol request to fetch events for the pubkey
-            request = {
-                "authors": [pubkey]
-            }
+        for pubkey in pubkeys:
+            if not cron_mode:
+                print(f"Fetching events for {pubkey}")
+            request = {"authors": [pubkey]}
             if since:
                 request["since"] = since
             ws.send(json.dumps(["REQ", "unique_subscription_id", request]))
             while True:
                 response = ws.recv()
                 data = json.loads(response)
-                if data[0] == "EOSE":  # End of subscription events
+                if data[0] == "EOSE":
                     break
                 if data[0] == "EVENT":
-                    events.append(data[2])  # Append the event data
+                    events.append(data[2])
         ws.close()
     except Exception as e:
         print(f"Error fetching events: {e}")
     return events
 
-# Publish events to news.nos.social
-def publish_to_news(events):
+def publish_to_news(events, cron_mode=False):
     try:
         ws = create_connection(NEWS_URL)
-        for event in tqdm(events, desc="Publishing events", unit="event", total=len(events)):
-            # Nostr protocol request to publish an event
+        for event in events:
+            if not cron_mode:
+                print(f"Publishing event ID {event['id']}")
             request = json.dumps(["EVENT", {
                 "pubkey": event["pubkey"],
                 "content": event["content"],
@@ -90,23 +95,21 @@ def publish_to_news(events):
             ws.send(request)
             response = ws.recv()
             response_data = json.loads(response)
-            if response_data[0] == "OK":
-                pass  # Uncomment the above line to enable success logging
-            else:
-                print(f"Failed to publish event ID {event['id']} to news.nos.social. Response: {response_data}")
+            if response_data[0] != "OK":
+                print(f"Failed to publish event ID {event['id']}. Response: {response_data}")
         ws.close()
     except Exception as e:
         print(f"Error publishing to news.nos.social: {e}")
 
-
-# Main function
 def main():
+    args = parse_arguments()
+    cron_mode = is_running_in_cron(args.cron)
+
     last_run_timestamp = get_last_run_timestamp()
-    recent_events = fetch_events(PUBLISHERS, since=last_run_timestamp)
+    recent_events = fetch_events(PUBLISHERS, since=last_run_timestamp, cron_mode=cron_mode)
     save_current_timestamp()
     if recent_events:
-        publish_to_news(recent_events)
-
+        publish_to_news(recent_events, cron_mode=cron_mode)
 
 if __name__ == "__main__":
     main()
