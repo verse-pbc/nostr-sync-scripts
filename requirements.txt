@@ -10,17 +10,3 @@ websocket==0.2.1
 websocket-client==1.8.0
 zope.event==5.0
 zope.interface==7.2
-csv
-datetime
-os
-sys
-concurrent.futures
-traceback
-math
-tqdm
-argparse
-ast
-time
-json
-pkg_resources
-importlib.metadata
