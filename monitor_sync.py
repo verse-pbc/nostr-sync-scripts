@@ -100,15 +100,13 @@ def verify_event_sync(pubkey):
     return results
 
 def main():
+    start_time = time.time()  # Add timer at start
     args = parse_arguments()
     is_interactive = args.interactive
     
     # Check file growth
     file_stats = check_file_growth()
-    if is_interactive:
-        print("\nFile Statistics:")
-        print(f"Current size: {file_stats['size_bytes']} bytes")
-        print(f"Number of pubkeys: {file_stats['line_count']}")
+    total_users = file_stats['line_count']
     
     # Sample random pubkeys for verification
     with open(MATCHING_NHEX_FILE, "r") as file:
@@ -148,18 +146,28 @@ def main():
                 "matching": results["matching"]
             })
     
-    # Only output if there are missing events
-    if missing_events:
-        if is_interactive:
+    # Update the final output section
+    duration = time.time() - start_time
+    
+    if is_interactive:
+        print("\nSync Status Report:")
+        print(f"- Number of Mastodon users fetched: {total_users}")
+        print(f"- Number of notes copied to relay.nos.social: {successful_checks}")
+        print(f"- Duration: {duration:.1f} seconds")
+        
+        if missing_events:
             print("\nMissing Events Detected:")
             for event in missing_events:
                 print(f"\nPubkey: {event['pubkey'][:8]}...")
                 print(f"Source events: {event['source']}")
                 print(f"Destination events: {event['destination']}")
                 print(f"Matching events: {event['matching']}")
-            print(f"\nTotal successful checks: {successful_checks}/{sample_size}")
-        else:
-            # Simple output for cron jobs
+    else:
+        # Simple output for non-interactive mode
+        print(f"- Number of Mastodon users fetched: {total_users}")
+        print(f"- Number of notes copied to relay.nos.social: {successful_checks}")
+        print(f"- Duration: {duration:.1f} seconds")
+        if missing_events:
             print(f"SYNC_MISSING:{len(missing_events)}/{sample_size}")
 
 if __name__ == "__main__":

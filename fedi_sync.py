@@ -5,6 +5,7 @@ import requests
 import os
 import sys
 import argparse
+import time
 
 # Relay URL and Publishers
 RELAY_URL = "wss://relay.mostr.pub"
@@ -84,6 +85,7 @@ def publish_to_nostr_relay(events, ws):
         print(f"Error publishing to Nostr relay: {e}")
 
 def main():
+    start_time = time.time()  # Add timer
     args = parse_arguments()
     cron_mode = is_running_in_cron(args.cron)
 
@@ -92,11 +94,22 @@ def main():
         print("No pubkeys found in matching_nhex.txt.")
         return
 
+    total_users = len(pubkeys)
+    successful_syncs = 0
+    
     last_run_timestamp = get_last_run_timestamp()
     if not cron_mode:
         print("Fetching and publishing recent events from Nostr relay...")
+    
     fetch_and_publish_events(pubkeys, since=last_run_timestamp, cron_mode=cron_mode)
     save_current_timestamp()
+    
+    # Calculate duration and print summary
+    duration = time.time() - start_time
+    
+    print(f"- Number of Mastodon users fetched: {total_users}")
+    print(f"- Number of notes copied to relay.nos.social: {successful_syncs}")
+    print(f"- Duration: {duration:.1f} seconds")
 
 if __name__ == "__main__":
     main()

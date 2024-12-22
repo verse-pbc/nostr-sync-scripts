@@ -4,6 +4,7 @@ from websocket import create_connection
 import os
 import sys
 import argparse
+import time
 
 # Relay URL and Publishers
 RELAY_URL = "wss://relay.mostr.pub"
@@ -102,14 +103,30 @@ def publish_to_news(events, cron_mode=False):
         print(f"Error publishing to news.nos.social: {e}")
 
 def main():
+    start_time = time.time()  # Add timer
     args = parse_arguments()
     cron_mode = is_running_in_cron(args.cron)
 
+    # Get total number of publishers
+    total_publishers = len(PUBLISHERS)
+    
+    # Fetch and publish events
     last_run_timestamp = get_last_run_timestamp()
     recent_events = fetch_events(PUBLISHERS, since=last_run_timestamp, cron_mode=cron_mode)
     save_current_timestamp()
+    
+    # Count successful publications
+    successful_publishes = 0
     if recent_events:
         publish_to_news(recent_events, cron_mode=cron_mode)
+        successful_publishes = len(recent_events)
+    
+    # Calculate duration and print summary
+    duration = time.time() - start_time
+    
+    print(f"- Number of Mastodon users fetched: {total_publishers}")
+    print(f"- Number of notes copied to relay.nos.social: {successful_publishes}")
+    print(f"- Duration: {duration:.1f} seconds")
 
 if __name__ == "__main__":
     main()

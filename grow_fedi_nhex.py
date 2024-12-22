@@ -10,8 +10,8 @@ import json
 import os
 from websocket import create_connection
 import csv
-import time
-from datetime import datetime, timedelta
+import time as time_module
+from datetime import datetime, timedelta, time as datetime_time
 import traceback
 import math
 import argparse
@@ -21,7 +21,7 @@ import sys
 RELAY_URL = "wss://relay.mostr.pub"
 TARGET_IDENTIFIER = "brid.gy_at_bsky"
 OUTPUT_FILE = "matching_nhex.txt"
-TIMESTAMP_FILE = "last_successful_timestamp.txt"
+TIMESTAMP_FILE = "last_ran_timestamp.txt"
 
 # Load blocklist domains from the CSV file
 def load_blocklist(file_path):
@@ -46,14 +46,31 @@ def read_last_successful_timestamp():
     if os.path.exists(TIMESTAMP_FILE):
         with open(TIMESTAMP_FILE, "r") as f:
             timestamp_str = f.read().strip()
-            if timestamp_str:
+            if timestamp_str and timestamp_str.isdigit():
                 return datetime.fromtimestamp(int(timestamp_str))
     return None
 
 # Update the timestamp file with the latest successful timestamp
 def update_last_successful_timestamp(timestamp):
-    with open(TIMESTAMP_FILE, "w") as f:
-        f.write(str(int(timestamp.timestamp())))
+    """
+    Update the timestamp file with the latest successful timestamp
+    Args:
+        timestamp: Either a datetime object or unix timestamp (int)
+    """
+    try:
+        if isinstance(timestamp, int):
+            # If we got an integer timestamp, just write it directly
+            with open(TIMESTAMP_FILE, "w") as f:
+                f.write(str(timestamp))
+        else:
+            # If we got a datetime object, convert to timestamp
+            with open(TIMESTAMP_FILE, "w") as f:
+                f.write(str(int(timestamp.timestamp())))
+        
+        if not is_tty():
+            print(f"Updated timestamp file to: {timestamp}")
+    except Exception as e:
+        print(f"Error updating timestamp file: {e}")
 
 # Function to check if the script is running in a TTY
 def is_tty():
@@ -61,16 +78,18 @@ def is_tty():
 
 # Fetch kind: 0 metadata events from the relay
 def fetch_metadata(blocklist, cron_mode=False):
+    start_time = time_module.time()
     pubkeys = set()
     processed_event_ids = set()
+    blocked_count = 0
+    loop_counter = 0
+    growth_factor = 0
+    time_gap = timedelta(minutes=20)
     
-    # Use the last successful timestamp if available, otherwise start from May 1, 2024
+    # Use the last successful timestamp if available
     start_date = read_last_successful_timestamp() or datetime(2022, 5, 6)
     current_time = datetime.now()
-    loop_counter = 0
-    time_gap = timedelta(hours=1)  # Initial time gap
-    growth_factor = 1  # Start with a 1-day increment
-
+    
     try:
         ws = create_connection(RELAY_URL)
         
@@ -79,7 +98,6 @@ def fetch_metadata(blocklist, cron_mode=False):
             start_timestamp = int(start_date.timestamp())
             end_timestamp = int((start_date + time_gap).timestamp())
             readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
-            readable_end = (start_date + time_gap).strftime('%Y-%m-%d %H:%M:%S')
             
             if not cron_mode and is_tty():
                 print(f"Loop {loop_counter}: Requesting events from {readable_start}")
@@ -93,15 +111,15 @@ def fetch_metadata(blocklist, cron_mode=False):
             ws.send(request)
             
             new_events_processed = False
-            event_count = 0  # Counter for events in this cycle
-            latest_event_timestamp = start_timestamp  # Track the latest timestamp in this batch
-            first_event_timestamp = None  # Initialize to track the first event's timestamp
+            event_count = 0
+            latest_event_timestamp = start_timestamp
+            first_event_timestamp = None
             
             while True:
                 response = ws.recv()
                 data = json.loads(response)
                 
-                if data[0] == "EOSE":  # End of subscription events
+                if data[0] == "EOSE":
                     if not cron_mode and is_tty():
                         print(f"Found: {event_count} profiles of {len(pubkeys)}")
                     break
@@ -114,18 +132,16 @@ def fetch_metadata(blocklist, cron_mode=False):
                         processed_event_ids.add(event_id)
                         content = event.get("content", "")
                         new_events_processed = True
-                        event_count += 1  # Increment event count
+                        event_count += 1
                         
-                        # Capture the timestamp of the first event
                         if first_event_timestamp is None:
                             first_event_timestamp = event.get("created_at", start_timestamp)
                         
                         try:
-                            if content:  # Ensure content is not None
+                            if content:
                                 content_dict = json.loads(content)
                                 nip05 = content_dict.get("nip05", "")
                                 
-                                # Skip processing if nip05 is None or empty
                                 if not nip05:
                                     continue
                                 
@@ -134,60 +150,51 @@ def fetch_metadata(blocklist, cron_mode=False):
                                 else:
                                     print(f"Domain blocked: {nip05}")
                                 
-                                # Update latest_event_timestamp to the event's timestamp
                                 event_timestamp = event.get("created_at", start_timestamp)
                                 latest_event_timestamp = max(latest_event_timestamp, event_timestamp)
                         except json.JSONDecodeError:
                             print("Content is not valid JSON.")
             
-            # Adjust time gap based on the number of events found
             if event_count >= 500:
-                # Retrace to capture missing events at the start of the range
-                end_timestamp = int((datetime.fromtimestamp(start_timestamp) - timedelta(minutes=5)).timestamp())
-                start_date = datetime.fromtimestamp(start_timestamp)  # Ensure start_date is reset correctly
-                time_gap = timedelta(seconds=(end_timestamp - start_timestamp))  # Calculate the time gap
-                growth_factor = 0  # Reset growth factor
-                if not cron_mode and is_tty():
-                    print(f"Retracing time gap to {time_gap}. Using first event timestamp for next range.")
+                # Too many events, step back
+                start_date = datetime.fromtimestamp(start_timestamp) - timedelta(minutes=5)
+                time_gap = timedelta(minutes=10)  # Reset to smaller gap
+                growth_factor = 0
             elif event_count > 150:
-                # Reset the time gap to 20 minutes
-                start_date = datetime.fromtimestamp(end_timestamp)  # Move to the end of the current range
-                time_gap = timedelta(minutes=20)  # Set to 20 minutes
-                end_timestamp = start_date + time_gap
-                if not cron_mode and is_tty():
-                    print(f"Resetting time gap to {time_gap}.")
+                # Good number of events
+                start_date = datetime.fromtimestamp(end_timestamp)
+                time_gap = timedelta(minutes=20)
             elif event_count > 50:
-                # Shrink the time gap
-                start_date = datetime.fromtimestamp(end_timestamp)  # Move to the end of the current range
-                time_gap = timedelta(minutes=60)   # Slower growth using square root
-                growth_factor += 1  # Increase the growth factor for the next cycle
-                end_timestamp = start_date + time_gap
-                if not cron_mode and is_tty():
-                    print(f"Resetting time gap to {time_gap}.")
+                # Decent number of events
+                start_date = datetime.fromtimestamp(end_timestamp)
+                time_gap = timedelta(minutes=60)
+                growth_factor += 1
             else:
-                # Grow the time gap when there are fewer than 50 events
-                start_date = datetime.fromtimestamp(end_timestamp)  # Move to the end of the current range
-                time_gap = max(timedelta(minutes=10), time_gap * 2)  # Multiply the current gap by 2
-                end_timestamp = start_date + time_gap
-                if not cron_mode and is_tty():
-                    print(f"Increasing time gap to {time_gap}.")
+                # Too few events, increase time gap
+                start_date = datetime.fromtimestamp(end_timestamp)
+                time_gap = max(timedelta(minutes=10), time_gap * 2)
             
-            # Save pubkeys to file after each request cycle
             save_pubkeys_to_file(pubkeys)
             
-            # Update the last successful timestamp if less than 500 events were found
             if event_count < 500:
+                # Only update timestamp if we didn't get too many events
                 update_last_successful_timestamp(end_timestamp)
             
-            # Optionally, add a delay to avoid overwhelming the relay
-            time.sleep(1)
+            time_module.sleep(1)
         
         ws.close()
     except Exception as e:
         if not cron_mode and is_tty():
             print(f"Error fetching metadata: {e}")
             traceback.print_exc()
-            print(f"Current state: start_date={start_date}, current_time={current_time}, loop_counter={loop_counter}")
+    
+    duration = time_module.time() - start_time
+    
+    print(f"- Time range: {start_date.strftime('%Y-%m-%d %H:%M:%S')} to {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"- Total profiles processed: {len(processed_event_ids)}")
+    print(f"- New profiles added: {len(pubkeys)}")
+    print(f"- Profiles blocked: {blocked_count}")
+    print(f"- Duration: {duration:.1f} seconds")
     
     return pubkeys
 
@@ -195,44 +202,36 @@ def fetch_metadata(blocklist, cron_mode=False):
 def save_pubkeys_to_file(pubkeys):
     existing_pubkeys = set()
     
-    # Load existing pubkeys from the file if it exists
     if os.path.exists(OUTPUT_FILE):
         with open(OUTPUT_FILE, "r") as f:
             for line in f:
                 existing_pubkeys.add(line.strip())
     
-    # Combine existing pubkeys with new ones
     all_pubkeys = existing_pubkeys.union(pubkeys)
     
-    # Calculate new and pre-existing counts
     new_pubkeys_count = len(pubkeys - existing_pubkeys)
     pre_existing_pubkeys_count = len(existing_pubkeys)
     
-    # Write all unique pubkeys back to the file
     with open(OUTPUT_FILE, "w") as f:
         for pubkey in all_pubkeys:
             f.write(pubkey + "\n")
     
     if not is_tty():
-        print(f"Public keys saved to {OUTPUT_FILE}")
-        print(f"New public keys added: {new_pubkeys_count}")
-        print(f"Pre-existing public keys: {pre_existing_pubkeys_count}")
+        print(f"- Total profiles in database: {len(all_pubkeys)}")
+        print(f"- New profiles this run: {new_pubkeys_count}")
+        print(f"- Pre-existing profiles: {pre_existing_pubkeys_count}")
 
 # Main function
 def main():
-    # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Fetch Nostr metadata.")
     parser.add_argument('--cron', action='store_true', help="Run in cron mode (suppress progress output)")
     args = parser.parse_args()
 
-    # Define the allowed start and end times
-    allowed_start_time = time(9, 0)  # 9:00 AM
-    allowed_end_time = time(17, 0)   # 5:00 PM
+    allowed_start_time = datetime_time(9, 0)
+    allowed_end_time = datetime_time(17, 0)
 
-    # Get the current time
     current_time = datetime.now().time()
 
-    # Check if the current time is within the allowed time range
     if allowed_start_time <= current_time <= allowed_end_time:
         blocklist = load_blocklist("_unified_tier0_blocklist.csv")
         pubkeys = fetch_metadata(blocklist, args.cron)
