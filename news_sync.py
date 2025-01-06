@@ -89,8 +89,11 @@ def publish_to_news(events, cron_mode=False):
                 print(f"Publishing event ID {event['id']}")
             request = json.dumps(["EVENT", {
                 "pubkey": event["pubkey"],
+                "kind": event["kind"],
                 "content": event["content"],
                 "created_at": event["created_at"],
+                "tags": event["tags"],
+                "sig": event["sig"],
                 "id": event["id"]
             }])
             ws.send(request)
@@ -125,7 +128,7 @@ def main():
     duration = time.time() - start_time
     
     print(f"- Number of Mastodon users fetched: {total_publishers}")
-    print(f"- Number of notes copied to relay.nos.social: {successful_publishes}")
+    print(f"- Number of notes copied to news.nos.social: {successful_publishes}")
     print(f"- Duration: {duration:.1f} seconds")
 
 if __name__ == "__main__":
