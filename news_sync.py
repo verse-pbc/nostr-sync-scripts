@@ -53,9 +53,9 @@ def get_last_run_timestamp():
     if os.path.exists(LAST_RUN_FILE):
         with open(LAST_RUN_FILE, "r") as file:
             content = file.read().strip()
-            if content.isdigit():
-                return int(content)
-            else:
+            try:
+                return int(float(content))
+            except ValueError:
                 print("Warning: last_ran_timestamp.txt is empty or contains invalid data.")
     return None
 
@@ -76,7 +76,7 @@ def fetch_events(pubkeys, relay_url, since=None, cron_mode=False):
                 print(f"Fetching events for {pubkey}")
             request = {"authors": [pubkey]}
             if since:
-                request["since"] = since
+                request["since"] = int(since)
             ws.send(json.dumps(["REQ", "unique_subscription_id", request]))
             while True:
                 response = ws.recv()
