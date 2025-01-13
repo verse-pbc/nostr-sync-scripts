@@ -41,7 +41,7 @@ def fetch_and_publish_events(pubkeys, since=None, cron_mode=False):
     try:
         ws_fetch = create_connection(RELAY_URL)
         ws_publish_news = create_connection(NEWS_URL)
-        
+
         for pubkey in pubkeys:
             events = []
             request = {"authors": [pubkey]}
@@ -72,8 +72,11 @@ def publish_to_nostr_relay(events, ws):
         for event in events:
             request = json.dumps(["EVENT", {
                 "pubkey": event["pubkey"],
+                "kind": event["kind"],
                 "content": event["content"],
                 "created_at": event["created_at"],
+                "tags": event["tags"],
+                "sig": event["sig"],
                 "id": event["id"]
             }])
             ws.send(request)
@@ -96,17 +99,17 @@ def main():
 
     total_users = len(pubkeys)
     successful_syncs = 0
-    
+
     last_run_timestamp = get_last_run_timestamp()
     if not cron_mode:
         print("Fetching and publishing recent events from Nostr relay...")
-    
+
     fetch_and_publish_events(pubkeys, since=last_run_timestamp, cron_mode=cron_mode)
     save_current_timestamp()
-    
+
     # Calculate duration and print summary
     duration = time.time() - start_time
-    
+
     print(f"- Number of Mastodon users fetched: {total_users}")
     print(f"- Number of notes copied to relay.nos.social: {successful_syncs}")
     print(f"- Duration: {duration:.1f} seconds")
