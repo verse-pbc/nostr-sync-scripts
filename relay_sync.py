@@ -130,10 +130,10 @@ class RelaySyncer:
                 ws.send(request)
                 response = ws.recv()
                 response_data = json.loads(response)
-                if response_data[0] == "OK":
-                    successful += 1
-                else:
+                if response_data[2] != True:
                     self._log(f"Failed to publish event ID {event['id']}. Response: {response_data}")
+                else:
+                    successful += 1
             except Exception as e:
                 self._log(f"Error publishing event {event.get('id', 'unknown')}: {e}")
 
