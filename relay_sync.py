@@ -25,12 +25,12 @@ class RelaySyncer:
 
     def _log(self, message: str) -> None:
         """Internal method for logging messages"""
-        print(message)  # Uses default end='\n'
+        print(message, flush=True)
 
     def _debug(self, message: str) -> None:
         """Internal method for debug logging when not in quiet mode"""
         if not self.quiet_mode:
-            print(message)  # Uses default end='\n'
+            print(message, flush=True)
 
     def _get_last_run_timestamp(self) -> Optional[int]:
         """
@@ -133,27 +133,34 @@ class RelaySyncer:
             Number of successfully published events
         """
         successful = 0
-        for event in events:
-            try:
-                ws = self._ensure_connection(ws, self.output_relay)
-                request = json.dumps(["EVENT", {
-                    "pubkey": event["pubkey"],
-                    "kind": event["kind"],
-                    "content": event["content"],
-                    "created_at": event["created_at"],
-                    "tags": event["tags"],
-                    "sig": event["sig"],
-                    "id": event["id"]
-                }])
-                ws.send(request)
-                response = ws.recv()
-                response_data = json.loads(response)
-                if response_data[2] != True:
-                    self._log(f"Failed to publish event ID {event['id']}. Response: {response_data}")
-                else:
-                    successful += 1
-            except Exception as e:
-                self._log(f"Error publishing event ID {event['id']}: {e}")
+        try:
+            ws = self._ensure_connection(ws, self.output_relay)
+            for event in events:
+                try:
+                    request = json.dumps(["EVENT", {
+                        "pubkey": event["pubkey"],
+                        "kind": event["kind"],
+                        "content": event["content"],
+                        "created_at": event["created_at"],
+                        "tags": event["tags"],
+                        "sig": event["sig"],
+                        "id": event["id"]
+                    }])
+                    ws.send(request)
+                    response = ws.recv()
+                    response_data = json.loads(response)
+                    if response_data[2] != True:
+                        self._log(f"Failed to publish event ID {event['id']}. Response: {response_data}")
+                    else:
+                        successful += 1
+                except Exception as e:
+                    self._log(f"Error publishing event ID {event['id']}: {e}")
+                    # If we got a connection error, try to reconnect for the next event
+                    if isinstance(e, (ConnectionError, BrokenPipeError)) or "socket is already closed" in str(e):
+                        ws = self._ensure_connection(None, self.output_relay)
+
+        except Exception as e:
+            self._log(f"Error during event publication: {e}")
 
         return successful
 
@@ -194,14 +201,5 @@ class RelaySyncer:
 
         except Exception as e:
             self._log(f"Error during sync: {e}")
-
-        finally:
-            # Ensure connections are closed
-            for ws in [ws_fetch, ws_publish]:
-                if ws:
-                    try:
-                        ws.close()
-                    except:
-                        pass
 
         return successful_syncs
