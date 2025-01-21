@@ -14,7 +14,7 @@ class RelaySyncer:
         Args:
             input_relay: Input relay URL to fetch from
             output_relay: Output relay URL to publish to
-            timestamp_file: File to store last run timestamp
+            timestamp_file: File to store last run timestamp (absolute path)
             quiet_mode: Whether to suppress progress output
         """
         self.input_relay = input_relay
@@ -56,6 +56,8 @@ class RelaySyncer:
             return
 
         try:
+            os.makedirs(os.path.dirname(self.timestamp_file), exist_ok=True)
+
             current_time = int(datetime.now(timezone.utc).timestamp())
             with open(self.timestamp_file, "w") as file:
                 file.write(str(current_time))
