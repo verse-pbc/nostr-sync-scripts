@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 import os
 import sys
 import time
+import socket
 
 class RelaySyncer:
     def __init__(self, input_relay: str, output_relay: str, timestamp_file: Optional[str] = None, quiet_mode: bool = False):
@@ -22,6 +23,8 @@ class RelaySyncer:
         self.timestamp_file = timestamp_file
         self.quiet_mode = quiet_mode
         self.timeout = 30  # Connection timeout in seconds
+        self.input_ws: Optional[WebSocket] = None
+        self.output_ws: Optional[WebSocket] = None
 
     def _log(self, message: str) -> None:
         """Internal method for logging messages"""
@@ -64,13 +67,6 @@ class RelaySyncer:
         except IOError as e:
             self._log(f"Error saving timestamp: {e}")
 
-    def _create_connection(self, url: str) -> WebSocket:
-        """Internal method to create a websocket connection with timeout"""
-        try:
-            return create_connection(url, timeout=self.timeout)
-        except Exception as e:
-            raise ConnectionError(f"Failed to connect to {url}: {e}")
-
     def _is_connection_closed(self, ws: Optional[WebSocket]) -> bool:
         """Check if a websocket connection is closed or None"""
         return ws is None or not ws.connected
@@ -83,84 +79,175 @@ class RelaySyncer:
                     ws.close()
             except:
                 pass
-            return self._create_connection(url)
+            try:
+                # Set shorter timeouts for initial connection
+                return create_connection(url, timeout=10)
+            except Exception as e:
+                raise ConnectionError(f"Failed to connect to {url}: {e}")
         return ws
 
-    def _fetch_events_for_pubkey(self, ws: WebSocket, pubkey: str, since: Optional[int]) -> List[Dict[str, Any]]:
+    def _with_retry(self, operation_name: str, operation, is_input_relay: bool, max_retries: int = 3, base_timeout: int = 10) -> Any:
         """
-        Internal method to fetch events for a single pubkey
+        Helper to run an operation with retries and proper connection/error handling
 
         Args:
-            ws: WebSocket connection to fetch from
+            operation_name: Name of operation for logging
+            operation: Function to run that takes a WebSocket connection
+            is_input_relay: Whether to use input relay (True) or output relay (False)
+            max_retries: Maximum number of retry attempts
+            base_timeout: Base timeout in seconds for the operation (will increase with retries)
+
+        Returns:
+            Result of the operation
+        """
+        retry_count = 0
+        last_error = None
+
+        while retry_count < max_retries:
+            # Exponential backoff: timeout doubles with each retry
+            current_timeout = base_timeout * (2 ** retry_count)
+
+            try:
+                if is_input_relay:
+                    self.input_ws = self._ensure_connection(self.input_ws, self.input_relay)
+                    self.input_ws.settimeout(current_timeout)
+                    ws = self.input_ws
+                else:
+                    self.output_ws = self._ensure_connection(self.output_ws, self.output_relay)
+                    self.output_ws.settimeout(current_timeout)
+                    ws = self.output_ws
+
+                if retry_count > 0:
+                    self._debug(f"Retry {retry_count + 1}/{max_retries} for {operation_name} with timeout {current_timeout}s")
+                return operation(ws)
+
+            except (TimeoutError, socket.timeout) as e:
+                last_error = f"Timeout after {current_timeout}s: {e}"
+                self._log(f"Error in {operation_name} (attempt {retry_count + 1}/{max_retries}): {last_error}")
+            except Exception as e:
+                last_error = str(e)
+                self._log(f"Error in {operation_name} (attempt {retry_count + 1}/{max_retries}): {last_error}")
+
+            retry_count += 1
+            if retry_count == max_retries:
+                self._log(f"Operation {operation_name} failed after {max_retries} retries")
+
+            # Cleanup and delay before retry
+            try:
+                if is_input_relay and self.input_ws:
+                    self.input_ws.close()
+                    self.input_ws = None
+                elif not is_input_relay and self.output_ws:
+                    self.output_ws.close()
+                    self.output_ws = None
+            except:
+                pass
+
+            # Exponential backoff for sleep time between retries
+            if retry_count < max_retries:
+                sleep_time = min(1 * (2 ** retry_count), 30)  # Cap at 30 seconds
+                time.sleep(sleep_time)
+
+        return None  # Operation failed after all retries
+
+    def _fetch_operation(self, ws: WebSocket, pubkey: str, since: Optional[int]) -> List[Dict[str, Any]]:
+        """
+        Internal method to perform the actual fetch operation on a websocket
+
+        Args:
+            ws: WebSocket connection to use
             pubkey: Public key to fetch events for
             since: Optional timestamp to fetch events since
 
         Returns:
-            List of events
+            List of events fetched
         """
         events = []
         request = {"authors": [pubkey]}
         if since is not None:
             request["since"] = since
 
-        try:
-            ws = self._ensure_connection(ws, self.input_relay)
-            ws.send(json.dumps(["REQ", "unique_subscription_id", request]))
-            while True:
-                response = ws.recv()
-                data = json.loads(response)
-                if data[0] == "EOSE":
-                    break
-                if data[0] == "EVENT":
-                    events.append(data[2])
+        ws.send(json.dumps(["REQ", "unique_subscription_id", request]))
 
-            if events:
-                self._debug(f"Fetched {len(events)} events for {pubkey}")
-            return events
-        except Exception as e:
-            self._log(f"Error fetching events for {pubkey}: {e}")
-            return []
+        while True:
+            response = ws.recv()
+            data = json.loads(response)
+            if data[0] == "EOSE":
+                break
+            if data[0] == "EVENT":
+                events.append(data[2])
 
-    def _publish_events(self, ws: WebSocket, events: List[Dict[str, Any]]) -> int:
+        if events:
+            self._debug(f"Fetched {len(events)} events for {pubkey}")
+        return events
+
+    def _publish_operation(self, ws: WebSocket, event: Dict[str, Any]) -> bool:
+        """
+        Internal method to perform the actual publish operation on a websocket
+
+        Args:
+            ws: WebSocket connection to use
+            event: Event to publish
+
+        Returns:
+            True if publish was successful
+        """
+        request = json.dumps(["EVENT", {
+            "pubkey": event["pubkey"],
+            "kind": event["kind"],
+            "content": event["content"],
+            "created_at": event["created_at"],
+            "tags": event["tags"],
+            "sig": event["sig"],
+            "id": event["id"]
+        }])
+
+        ws.send(request)
+        response = ws.recv()
+        response_data = json.loads(response)
+
+        if response_data[2] != True:
+            raise Exception(f"Failed to publish. Response: {response_data}")
+        return True
+
+    def _fetch_events_for_pubkey(self, pubkey: str, since: Optional[int]) -> List[Dict[str, Any]]:
+        """
+        Internal method to fetch events for a single pubkey
+
+        Args:
+            pubkey: Public key to fetch events for
+            since: Optional timestamp to fetch events since
+
+        Returns:
+            List of events
+        """
+        return self._with_retry(
+            operation_name=f"fetch events for {pubkey}",
+            operation=lambda ws: self._fetch_operation(ws, pubkey, since),
+            is_input_relay=True,
+            base_timeout=15
+        ) or []
+
+    def _publish_events(self, events: List[Dict[str, Any]]) -> int:
         """
         Internal method to publish events to the output relay
 
         Args:
-            ws: WebSocket connection to publish to
             events: List of events to publish
 
         Returns:
             Number of successfully published events
         """
         successful = 0
-        try:
-            ws = self._ensure_connection(ws, self.output_relay)
-            for event in events:
-                try:
-                    request = json.dumps(["EVENT", {
-                        "pubkey": event["pubkey"],
-                        "kind": event["kind"],
-                        "content": event["content"],
-                        "created_at": event["created_at"],
-                        "tags": event["tags"],
-                        "sig": event["sig"],
-                        "id": event["id"]
-                    }])
-                    ws.send(request)
-                    response = ws.recv()
-                    response_data = json.loads(response)
-                    if response_data[2] != True:
-                        self._log(f"Failed to publish event ID {event['id']}. Response: {response_data}")
-                    else:
-                        successful += 1
-                except Exception as e:
-                    self._log(f"Error publishing event ID {event['id']}: {e}")
-                    # If we got a connection error, try to reconnect for the next event
-                    if isinstance(e, (ConnectionError, BrokenPipeError)) or "socket is already closed" in str(e):
-                        ws = self._ensure_connection(None, self.output_relay)
 
-        except Exception as e:
-            self._log(f"Error during event publication: {e}")
+        for event in events:
+            if self._with_retry(
+                operation_name=f"publish event {event['id']}",
+                operation=lambda ws: self._publish_operation(ws, event),
+                is_input_relay=False,
+                base_timeout=10
+            ):
+                successful += 1
 
         return successful
 
@@ -176,30 +263,19 @@ class RelaySyncer:
             Number of successfully published events
         """
         successful_syncs = 0
-        ws_fetch = None
-        ws_publish = None
+        since = self._get_last_run_timestamp()
 
-        try:
-            self._debug(f"\nConnecting to relays...")
-            ws_fetch = self._create_connection(self.input_relay)
-            ws_publish = self._create_connection(self.output_relay)
+        if since:
+            dt = datetime.fromtimestamp(since, timezone.utc)
+            self._debug(f"Fetching events since {dt}")
+        self._debug(f"Fetching from {self.input_relay}...")
 
-            since = self._get_last_run_timestamp()
+        for pubkey in pubkeys:
+            events = self._fetch_events_for_pubkey(pubkey, since)
+            if events:
+                self._debug(f"Publishing {len(events)} events for {pubkey} to {self.output_relay}...")
+                successful_syncs += self._publish_events(events)
 
-            if since:
-                dt = datetime.fromtimestamp(since, timezone.utc)
-                self._debug(f"Fetching events since {dt}")
-            self._debug(f"Fetching from {self.input_relay}...")
-
-            for pubkey in pubkeys:
-                events = self._fetch_events_for_pubkey(ws_fetch, pubkey, since)
-                if events:
-                    self._debug(f"Publishing {len(events)} events for {pubkey} to {self.output_relay}...")
-                    successful_syncs += self._publish_events(ws_publish, events)
-
-                self._save_current_timestamp()
-
-        except Exception as e:
-            self._log(f"Error during sync: {e}")
+            self._save_current_timestamp()
 
         return successful_syncs
