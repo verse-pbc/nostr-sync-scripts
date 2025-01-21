@@ -1,11 +1,15 @@
 import argparse
 import time
+import os
 from relay_sync import RelaySyncer
+
+# Get the directory where the script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Relay URLs
 RELAY_URL = "wss://relay.mostr.pub"
 OUTPUT_RELAY = "wss://relay.nos.social"
-LAST_RUN_FILE = "last_ran_fedisync_timestamp.txt"
+LAST_RUN_FILE = os.path.join(SCRIPT_DIR, "last_ran_fedisync_timestamp.txt")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Fediverse to Nostr synchronization script.")
@@ -14,7 +18,8 @@ def parse_arguments():
 
 def get_pubkeys_from_file(filename="matching_nhex.txt"):
     try:
-        with open(filename, "r") as file:
+        full_path = os.path.join(SCRIPT_DIR, filename)
+        with open(full_path, "r") as file:
             return [line.strip() for line in file if line.strip()]
     except FileNotFoundError:
         print(f"No pubkeys found in {filename}.")

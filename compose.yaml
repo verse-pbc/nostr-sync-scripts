@@ -1,0 +1,11 @@
+services:
+  sync:
+    build: .
+    environment:
+      - INPUT_RELAY_URL=wss://relay.mostr.pub
+      - OUTPUT_RELAY_URL=wss://relay.nos.social
+      - FEDI_RELAY_URL=wss://relay.mostr.pub
+      - NOSTR_RELAY_URL=wss://relay.nos.social
+      - NEWS_RELAY_URL=wss://news.nos.social
+    volumes:
+      - .:/home/admin/nostr-sync-scripts

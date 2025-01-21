@@ -1,6 +1,10 @@
 import argparse
 import time
+import os
 from relay_sync import RelaySyncer
+
+# Get the directory where the script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Relay URLs
 FEDI_RELAY_URL = "wss://relay.mostr.pub"
@@ -31,8 +35,8 @@ FEDI_PUBLISHERS = [
     "82acde23330b88e6831146a373eee2716c57df3e0054c5187169e92ee0880120",  # Al Jazeera
 ]
 
-LAST_RUN_FILE_NOSTR = "news_sync_timestamp_nostr.txt"
-LAST_RUN_FILE_FEDI = "news_sync_timestamp_fedi.txt"
+LAST_RUN_FILE_NOSTR = os.path.join(SCRIPT_DIR, "news_sync_timestamp_nostr.txt")
+LAST_RUN_FILE_FEDI = os.path.join(SCRIPT_DIR, "news_sync_timestamp_fedi.txt")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="News synchronization script.")
