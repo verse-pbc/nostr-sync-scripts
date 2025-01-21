@@ -23,14 +23,14 @@ class RelaySyncer:
         self.quiet_mode = quiet_mode
         self.timeout = 30  # Connection timeout in seconds
 
-    def _log(self, message: str, end: str = '\n') -> None:
+    def _log(self, message: str) -> None:
         """Internal method for logging messages"""
-        print(message, end=end)
+        print(message)  # Uses default end='\n'
 
-    def _debug(self, message: str, end: str = '\n') -> None:
+    def _debug(self, message: str) -> None:
         """Internal method for debug logging when not in quiet mode"""
         if not self.quiet_mode:
-            print(message, end=end)
+            print(message)  # Uses default end='\n'
 
     def _get_last_run_timestamp(self) -> Optional[int]:
         """
@@ -115,7 +115,7 @@ class RelaySyncer:
                     events.append(data[2])
 
             if events:
-                self._debug(f"{len(events)} events fetched for {pubkey}")
+                self._debug(f"Fetched {len(events)} events for {pubkey}")
             return events
         except Exception as e:
             self._log(f"Error fetching events for {pubkey}: {e}")
