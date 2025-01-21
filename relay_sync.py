@@ -97,13 +97,12 @@ class RelaySyncer:
                     break
                 if data[0] == "EVENT":
                     events.append(data[2])
-                    self._debug(f"\r{len(events)} events fetched for {pubkey}", end='')
 
             if events:
-                self._debug("")  # New line after progress
+                self._debug(f"{len(events)} events fetched for {pubkey}")
             return events
         except Exception as e:
-            self._log(f"\nError fetching events for {pubkey}: {e}")
+            self._log(f"Error fetching events for {pubkey}: {e}")
             return []
 
     def _publish_events(self, ws: WebSocket, events: List[Dict[str, Any]]) -> int:
