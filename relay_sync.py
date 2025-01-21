@@ -71,6 +71,21 @@ class RelaySyncer:
         except Exception as e:
             raise ConnectionError(f"Failed to connect to {url}: {e}")
 
+    def _is_connection_closed(self, ws: Optional[WebSocket]) -> bool:
+        """Check if a websocket connection is closed or None"""
+        return ws is None or not ws.connected
+
+    def _ensure_connection(self, ws: Optional[WebSocket], url: str) -> WebSocket:
+        """Ensure we have a valid connection, create new one if needed"""
+        if self._is_connection_closed(ws):
+            try:
+                if ws:
+                    ws.close()
+            except:
+                pass
+            return self._create_connection(url)
+        return ws
+
     def _fetch_events_for_pubkey(self, ws: WebSocket, pubkey: str, since: Optional[int]) -> List[Dict[str, Any]]:
         """
         Internal method to fetch events for a single pubkey
@@ -89,6 +104,7 @@ class RelaySyncer:
             request["since"] = since
 
         try:
+            ws = self._ensure_connection(ws, self.input_relay)
             ws.send(json.dumps(["REQ", "unique_subscription_id", request]))
             while True:
                 response = ws.recv()
@@ -119,6 +135,7 @@ class RelaySyncer:
         successful = 0
         for event in events:
             try:
+                ws = self._ensure_connection(ws, self.output_relay)
                 request = json.dumps(["EVENT", {
                     "pubkey": event["pubkey"],
                     "kind": event["kind"],
@@ -136,7 +153,7 @@ class RelaySyncer:
                 else:
                     successful += 1
             except Exception as e:
-                self._log(f"Error publishing event {event.get('id', 'unknown')}: {e}")
+                self._log(f"Error publishing event ID {event['id']}: {e}")
 
         return successful
 
@@ -157,8 +174,8 @@ class RelaySyncer:
 
         try:
             self._debug(f"\nConnecting to relays...")
-            ws_publish = self._create_connection(self.output_relay)
             ws_fetch = self._create_connection(self.input_relay)
+            ws_publish = self._create_connection(self.output_relay)
 
             since = self._get_last_run_timestamp()
 
