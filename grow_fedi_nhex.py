@@ -80,6 +80,38 @@ def update_last_successful_timestamp(timestamp):
 def is_tty():
     return sys.stdout.isatty()
 
+# Add the new function before fetch_metadata
+def process_event(event, processed_event_ids, pubkeys, blocklist, cron_mode):
+    """Process a single event and update the relevant sets."""
+    event_id = event.get("id")
+    if event_id not in processed_event_ids:
+        processed_event_ids.add(event_id)
+        content = event.get("content", "")
+
+        try:
+            if content:
+                content_dict = json.loads(content)
+                nip05 = content_dict.get("nip05", "")
+
+                if not nip05:
+                    if not cron_mode:
+                        print(f"Event {event_id} has no NIP-05 identifier")
+                    return 0, 0
+
+                if not is_domain_blocked(nip05, blocklist):
+                    pubkeys.add(event["pubkey"])
+                    if not cron_mode:
+                        print(f"Added pubkey {event['pubkey']} with NIP-05 {nip05}")
+                    return 1, 0
+                else:
+                    if not cron_mode:
+                        print(f"Blocked domain: {nip05}")
+                    return 1, 1
+        except json.JSONDecodeError:
+            if not cron_mode:
+                print(f"Content is not valid JSON for event {event_id}")
+    return 0, 0
+
 # Fetch kind: 0 metadata events from the relay
 def fetch_metadata(blocklist, cron_mode=False):
     start_time = time_module.time()
@@ -109,12 +141,10 @@ def fetch_metadata(blocklist, cron_mode=False):
             # Calculate potential end time
             potential_end = start_date + time_gap
 
-            # If we would exceed current time, adjust to current time
+            # If we would exceed current time, adjust to current time and process final window
             if potential_end >= current_time:
                 potential_end = current_time
                 end_timestamp = int(potential_end.timestamp())
-                save_pubkeys_to_file(pubkeys)
-                update_last_successful_timestamp(current_time)
 
                 # Only process this final window if it's not zero-length
                 if potential_end > start_date:
@@ -129,7 +159,31 @@ def fetch_metadata(blocklist, cron_mode=False):
                         {"kinds": [0], "since": start_timestamp, "until": end_timestamp}
                     ])
                     ws.send(request)
-                break
+
+                    # Process the final window's events
+                    event_count = 0
+                    while True:
+                        response = ws.recv()
+                        data = json.loads(response)
+
+                        if data[0] == "EOSE":
+                            if not cron_mode:
+                                print(f"Received EOSE for final window, events found: {event_count}")
+                            break
+
+                        if data[0] == "EVENT" and "content" in data[2]:
+                            processed, blocked = process_event(data[2], processed_event_ids, pubkeys, blocklist, cron_mode)
+                            event_count += processed
+                            blocked_count += blocked
+
+                    # Only save and update timestamp if we actually processed new events
+                    if event_count > 0:
+                        save_pubkeys_to_file(pubkeys)
+                        update_last_successful_timestamp(current_time)
+                    else:
+                        # If no events were found in the final window, update timestamp to avoid getting stuck
+                        update_last_successful_timestamp(current_time)
+                break  # Exit the main loop after processing the final window
 
             end_timestamp = int(potential_end.timestamp())
             readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
@@ -159,37 +213,12 @@ def fetch_metadata(blocklist, cron_mode=False):
 
                 if data[0] == "EVENT" and "content" in data[2]:
                     event = data[2]
-                    event_id = event.get("id")
-
-                    if event_id not in processed_event_ids:
-                        processed_event_ids.add(event_id)
-                        content = event.get("content", "")
-                        event_count += 1
-
-                        try:
-                            if content:
-                                content_dict = json.loads(content)
-                                nip05 = content_dict.get("nip05", "")
-
-                                if not nip05:
-                                    if not cron_mode:
-                                        print(f"Event {event_id} has no NIP-05 identifier")
-                                    continue
-
-                                if not is_domain_blocked(nip05, blocklist):
-                                    pubkeys.add(event["pubkey"])
-                                    if not cron_mode:
-                                        print(f"Added pubkey {event['pubkey']} with NIP-05 {nip05}")
-                                else:
-                                    blocked_count += 1
-                                    if not cron_mode:
-                                        print(f"Blocked domain: {nip05}")
-
-                                event_timestamp = event.get("created_at", start_timestamp)
-                                latest_event_timestamp = max(latest_event_timestamp, event_timestamp)
-                        except json.JSONDecodeError:
-                            if not cron_mode:
-                                print(f"Content is not valid JSON for event {event_id}")
+                    processed, blocked = process_event(event, processed_event_ids, pubkeys, blocklist, cron_mode)
+                    event_count += processed
+                    blocked_count += blocked
+                    if processed:
+                        event_timestamp = event.get("created_at", start_timestamp)
+                        latest_event_timestamp = max(latest_event_timestamp, event_timestamp)
 
             if event_count >= 500:
                 # Too many events, step back
@@ -210,11 +239,10 @@ def fetch_metadata(blocklist, cron_mode=False):
                 start_date = datetime.fromtimestamp(end_timestamp)
                 time_gap = min(time_gap * 2, timedelta(days=30))
 
-            save_pubkeys_to_file(pubkeys)
-
-            if event_count < 500:
-                # Only update timestamp if we didn't get too many events
-                update_last_successful_timestamp(end_timestamp)
+            # Only save and update timestamp if we actually processed new events
+            if event_count > 0:
+                save_pubkeys_to_file(pubkeys)
+                update_last_successful_timestamp(latest_event_timestamp)
 
             time_module.sleep(1)
 
