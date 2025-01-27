@@ -13,9 +13,9 @@ import csv
 import time as time_module
 from datetime import datetime, timedelta, time as datetime_time
 import traceback
-import math
 import argparse
 import sys
+import uuid
 
 # Get the directory where the script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -90,42 +90,56 @@ def fetch_metadata(blocklist, cron_mode=False):
     growth_factor = 0
     time_gap = timedelta(minutes=20)
 
-    # Use the last successful timestamp if available
-    start_date = read_last_successful_timestamp() or datetime(2022, 5, 6)
+    start_date = read_last_successful_timestamp() or datetime(2024, 5, 6)
     current_time = datetime.now()
+
+    if not cron_mode:
+        print(f"Starting time range: {start_date} to {current_time}")
+        print(f"Last successful timestamp: {read_last_successful_timestamp()}")
 
     try:
         ws = create_connection(RELAY_URL)
+        if not cron_mode:
+            print(f"Connected to relay: {RELAY_URL}")
 
         while start_date < current_time:
             loop_counter += 1
             start_timestamp = int(start_date.timestamp())
-            end_timestamp = int((start_date + time_gap).timestamp())
+
+            # Calculate potential end time
+            potential_end = start_date + time_gap
+
+            # Ensure we don't exceed current time
+            if potential_end > current_time:
+                end_timestamp = int(current_time.timestamp())
+                actual_end = current_time
+            else:
+                end_timestamp = int(potential_end.timestamp())
+                actual_end = potential_end
+
             readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
+            readable_end = actual_end.strftime('%Y-%m-%d %H:%M:%S')
 
-            if not cron_mode and is_tty():
-                print(f"Loop {loop_counter}: Requesting events from {readable_start}")
+            if not cron_mode:
+                print(f"Processing time window: {readable_start} to {readable_end}")
 
-            # Subscribe to all kind: 0 events with a time filter
             request = json.dumps([
                 "REQ",
-                "metadata_subscription",
+                str(uuid.uuid4()),
                 {"kinds": [0], "since": start_timestamp, "until": end_timestamp}
             ])
             ws.send(request)
 
-            new_events_processed = False
             event_count = 0
             latest_event_timestamp = start_timestamp
-            first_event_timestamp = None
 
             while True:
                 response = ws.recv()
                 data = json.loads(response)
 
                 if data[0] == "EOSE":
-                    if not cron_mode and is_tty():
-                        print(f"Found: {event_count} profiles of {len(pubkeys)}")
+                    if not cron_mode:
+                        print(f"Received EOSE for window {readable_start}, events found: {event_count}")
                     break
 
                 if data[0] == "EVENT" and "content" in data[2]:
@@ -135,11 +149,7 @@ def fetch_metadata(blocklist, cron_mode=False):
                     if event_id not in processed_event_ids:
                         processed_event_ids.add(event_id)
                         content = event.get("content", "")
-                        new_events_processed = True
                         event_count += 1
-
-                        if first_event_timestamp is None:
-                            first_event_timestamp = event.get("created_at", start_timestamp)
 
                         try:
                             if content:
@@ -147,17 +157,24 @@ def fetch_metadata(blocklist, cron_mode=False):
                                 nip05 = content_dict.get("nip05", "")
 
                                 if not nip05:
+                                    if not cron_mode:
+                                        print(f"Event {event_id} has no NIP-05 identifier")
                                     continue
 
                                 if not is_domain_blocked(nip05, blocklist):
                                     pubkeys.add(event["pubkey"])
+                                    if not cron_mode:
+                                        print(f"Added pubkey {event['pubkey']} with NIP-05 {nip05}")
                                 else:
-                                    print(f"Domain blocked: {nip05}")
+                                    blocked_count += 1
+                                    if not cron_mode:
+                                        print(f"Blocked domain: {nip05}")
 
                                 event_timestamp = event.get("created_at", start_timestamp)
                                 latest_event_timestamp = max(latest_event_timestamp, event_timestamp)
                         except json.JSONDecodeError:
-                            print("Content is not valid JSON.")
+                            if not cron_mode:
+                                print(f"Content is not valid JSON for event {event_id}")
 
             if event_count >= 500:
                 # Too many events, step back
@@ -174,9 +191,9 @@ def fetch_metadata(blocklist, cron_mode=False):
                 time_gap = timedelta(minutes=60)
                 growth_factor += 1
             else:
-                # Too few events, increase time gap
+                # Too few events, increase time gap exponentially but cap at 1 month
                 start_date = datetime.fromtimestamp(end_timestamp)
-                time_gap = max(timedelta(minutes=10), time_gap * 2)
+                time_gap = min(time_gap * 2, timedelta(days=30))
 
             save_pubkeys_to_file(pubkeys)
 
@@ -231,18 +248,9 @@ def main():
     parser.add_argument('--cron', action='store_true', help="Run in cron mode (suppress progress output)")
     args = parser.parse_args()
 
-    allowed_start_time = datetime_time(9, 0)
-    allowed_end_time = datetime_time(17, 0)
-
-    current_time = datetime.now().time()
-
-    if allowed_start_time <= current_time <= allowed_end_time:
-        blocklist = load_blocklist("_unified_tier0_blocklist.csv")
-        pubkeys = fetch_metadata(blocklist, args.cron)
-        save_pubkeys_to_file(pubkeys)
-    else:
-        if not args.cron and is_tty():
-            print("The script can only run between 9:00 AM and 5:00 PM.")
+    blocklist = load_blocklist("_unified_tier0_blocklist.csv")
+    pubkeys = fetch_metadata(blocklist, args.cron)
+    save_pubkeys_to_file(pubkeys)
 
 if __name__ == "__main__":
     main()
