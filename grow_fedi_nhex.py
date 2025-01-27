@@ -109,16 +109,15 @@ def fetch_metadata(blocklist, cron_mode=False):
             # Calculate potential end time
             potential_end = start_date + time_gap
 
-            # Ensure we don't exceed current time
+            # If we would exceed current time, we're done
             if potential_end > current_time:
-                end_timestamp = int(current_time.timestamp())
-                actual_end = current_time
-            else:
-                end_timestamp = int(potential_end.timestamp())
-                actual_end = potential_end
+                save_pubkeys_to_file(pubkeys)
+                update_last_successful_timestamp(current_time)
+                break
 
+            end_timestamp = int(potential_end.timestamp())
             readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
-            readable_end = actual_end.strftime('%Y-%m-%d %H:%M:%S')
+            readable_end = potential_end.strftime('%Y-%m-%d %H:%M:%S')
 
             if not cron_mode:
                 print(f"Processing time window: {readable_start} to {readable_end}")
