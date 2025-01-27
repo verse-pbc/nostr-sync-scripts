@@ -109,10 +109,26 @@ def fetch_metadata(blocklist, cron_mode=False):
             # Calculate potential end time
             potential_end = start_date + time_gap
 
-            # If we would exceed current time, we're done
-            if potential_end > current_time:
+            # If we would exceed current time, adjust to current time
+            if potential_end >= current_time:
+                potential_end = current_time
+                end_timestamp = int(potential_end.timestamp())
                 save_pubkeys_to_file(pubkeys)
                 update_last_successful_timestamp(current_time)
+
+                # Only process this final window if it's not zero-length
+                if potential_end > start_date:
+                    readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
+                    readable_end = potential_end.strftime('%Y-%m-%d %H:%M:%S')
+                    if not cron_mode:
+                        print(f"Processing final time window: {readable_start} to {readable_end}")
+
+                    request = json.dumps([
+                        "REQ",
+                        str(uuid.uuid4()),
+                        {"kinds": [0], "since": start_timestamp, "until": end_timestamp}
+                    ])
+                    ws.send(request)
                 break
 
             end_timestamp = int(potential_end.timestamp())
