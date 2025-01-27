@@ -128,10 +128,10 @@ class RelaySyncer:
 
             except (TimeoutError, socket.timeout) as e:
                 last_error = f"Timeout after {current_timeout}s: {e}"
-                self._log(f"[NEW_V2] Error in {operation_name} (attempt {retry_count + 1}/{max_retries}): {last_error}")
+                self._log(f"Error in {operation_name} (attempt {retry_count + 1}/{max_retries}): {last_error}")
             except Exception as e:
                 last_error = str(e)
-                self._log(f"[NEW_V2] Error in {operation_name} (attempt {retry_count + 1}/{max_retries}): {last_error}")
+                self._log(f"Error in {operation_name} (attempt {retry_count + 1}/{max_retries}): {last_error}")
 
             retry_count += 1
             if retry_count == max_retries:

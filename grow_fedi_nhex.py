@@ -13,7 +13,6 @@ import csv
 import time as time_module
 from datetime import datetime, timedelta, time as datetime_time
 import traceback
-import math
 import argparse
 import sys
 import uuid
@@ -113,13 +112,16 @@ def fetch_metadata(blocklist, cron_mode=False):
             # Ensure we don't exceed current time
             if potential_end > current_time:
                 end_timestamp = int(current_time.timestamp())
+                actual_end = current_time
             else:
                 end_timestamp = int(potential_end.timestamp())
+                actual_end = potential_end
 
             readable_start = start_date.strftime('%Y-%m-%d %H:%M:%S')
+            readable_end = actual_end.strftime('%Y-%m-%d %H:%M:%S')
 
             if not cron_mode:
-                print(f"Processing time window: {readable_start} to {(start_date + time_gap).strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"Processing time window: {readable_start} to {readable_end}")
 
             request = json.dumps([
                 "REQ",
@@ -128,7 +130,6 @@ def fetch_metadata(blocklist, cron_mode=False):
             ])
             ws.send(request)
 
-            new_events_processed = False
             event_count = 0
             latest_event_timestamp = start_timestamp
 
@@ -148,7 +149,6 @@ def fetch_metadata(blocklist, cron_mode=False):
                     if event_id not in processed_event_ids:
                         processed_event_ids.add(event_id)
                         content = event.get("content", "")
-                        new_events_processed = True
                         event_count += 1
 
                         try:
