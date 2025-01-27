@@ -191,9 +191,9 @@ def fetch_metadata(blocklist, cron_mode=False):
                 time_gap = timedelta(minutes=60)
                 growth_factor += 1
             else:
-                # Too few events, increase time gap exponentially
+                # Too few events, increase time gap exponentially but cap at 1 month
                 start_date = datetime.fromtimestamp(end_timestamp)
-                time_gap = time_gap * 2
+                time_gap = min(time_gap * 2, timedelta(days=30))
 
             save_pubkeys_to_file(pubkeys)
 
